@@ -1,8 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
-
+import scipy 
 from case_studies import *
+from scipy.optimize import minimize
 
+def calculate_x0(A,b,x):
+    return x - np.linalg.pinv(A)@(A@x + b)
 
 def SteepestDescent(x0, f, df, A, dims, c1, rho, tol, maxiter):
     x = x0
@@ -13,12 +16,12 @@ def SteepestDescent(x0, f, df, A, dims, c1, rho, tol, maxiter):
     M = np.identity(dims) - A.T @ np.linalg.inv(A @ A.T) @ A
     for i in range(maxiter):
         p = -M @ df(x)
-        alpha = backtrack(x, f, df, p, c1, rho, beta)
+        alpha = backtrack(x, f, df, p, c1, rho, beta)   
         x = x + alpha * p
         beta = alpha/rho
         x_list.append(x)
         # check if the norm of the gradient is smaller than the tolerance
-        if np.linalg.norm(df(x) - x_opt(f.__name__, 2)) < tol:
+        if np.linalg.norm(df(x) - np.array([0,0])) < tol:
             break
     return x_list
 
@@ -31,21 +34,37 @@ def backtrack(x, f, df, p_k, c1, rho, beta_k):
 def is_hessian_definite(H: np.ndarray) -> bool:
     return np.all(np.linalg.eigvals(H) > 0)
 
-def Newton(x0, f, df, A, ddf, tol, maxiter):
+def is_full_rank(A):
+    return np.linalg.matrix_rank(A) == min(A.shape)
+
+
+def Newton(x0, f, df, A, ddf, tol, maxiter, b):
     x = x0
     x_list = []
     x_list.append(x)
+    
     for i in range(maxiter):
         if is_hessian_definite(ddf(x)):
             B = ddf(x)
+            first_term = np.block([[B, A.T], [A, np.zeros(A.shape)]])
+            second_term = np.block([-df(x), b])
+            solution = np.linalg.solve(first_term, second_term)
+            p_k = solution[:2]
         else:
             eig_vals, eig_vecs = np.linalg.eig(ddf(x))
-            B = np.dot(abs(eig_vals), np.outer(eig_vecs, eig_vecs.T))
-        first_term = np.block([[B, A.T], [A, 0]])
-        second_term = np.concatenate([-df(x), 0])
-        solution = np.linalg.solve(first_term, second_term)
-        p_k = solution[2:]
-        d_lambda = solution[:2]
+            #print('eigen_vals:' + str(eig_vals) + 'eigen_vecs' + str(eig_vecs))
+            B = 0
+            for i in range(len(eig_vecs)):
+                #print('B: ' +  str(B) + 'at the i: iteration ' + str(i) + '\n')
+                B += eig_vals[i] * np.outer(eig_vecs[i], eig_vecs[i])
+            #print('A_matrix: ' + str(A))
+            first_term = np.block([[B, A.T], [A, np.zeros(B.shape)]])
+            second_term = np.block([-df(x), b])
+            solution = np.linalg.solve(first_term, second_term)
+            p_k = solution[:2]
+        #print(first_term)
+        #print(second_term)
+        #print(solution)
         alpha = BacktrackingLineSearch(x, p_k, f, df, 'Newton')
         x = x + alpha * p_k
         x_list.append(x)
@@ -135,54 +154,65 @@ if __name__ == '__main__':
     np.random.seed(42)
     
     # parameters
-    nb_run = 50
+    nb_run = 1
     dim = 2
-    maxiter = 500
+    maxiter = 250
     epsilon = 1e-9
     
     functions = [f1, f2, f3, f4, f5]
     dfuntions = [df1, df2, df3, df4, df5]
     ddfuntions = [Hf1, Hf2, Hf3, Hf4, Hf5]
     
-    x0 = np.array([100, -100])
-    A = np.array([[1,0],[0,-1]])
-    b=0
+    #x0 = np.array([100, 100])
+    A = np.array([[3,0],[0,1]])
+    b = np.array([1,3])
     
     for n in range(len(functions)):
         print("Function: ", functions[n].__name__)
         # Steepest Descent and Newton
-        #x_list_sd = []
+        x_list_sd = []
         x_list_newton = []
         for i in range(nb_run):
-            #x_list = SteepestDescent(x0[i], functions[n], dfuntions[n], epsilon, maxiter)
-            #x_list_sd.append(x_list)
-            x_list = Newton(x0, functions[n], dfuntions[n], A, ddfuntions[n], epsilon, maxiter)
+
+            if not is_full_rank(A):
+                print('A isnt full rank\n')
+                break
+            x0 = calculate_x0(A, b, np.array([100,100]))
+            print('x0:' + str(x0))
+
+            x_list = SteepestDescent(x0, functions[n], dfuntions[n], A, dim, 0.1, 0.5, epsilon, maxiter)
+            x_list_sd.append(x_list)
+            
+            x_list = Newton(x0, functions[n], dfuntions[n], A, ddfuntions[n], epsilon, maxiter,b)
+            cons = [{"type": "ineq", "fun": lambda x: A @ x - b}]
+            x_list_scipy = minimize(functions[n], x0, constraints = cons)
             x_list_newton.append(x_list)
-        
+
         # sort the list depend on the error
-        #x_list_sd.sort(key=lambda x: np.linalg.norm(x[-1] - x_opt(functions[n].__name__, dim)))
-        x_list_newton.sort(key=lambda x: np.linalg.norm(x[-1] - x_opt(functions[n].__name__, dim)))
-        #print("Steepest Descent: ", x_list_sd[0][-1], "Median Error: ",
-              #np.linalg.norm(x_list_sd[0][-1] - x_opt(functions[n].__name__, dim)), "Median Iteration: ",
-              #len(x_list_sd[len(x_list_sd) // 2]))
-        print("Newton: ", x_list_newton[0][-1], "Median Error: ",
-              np.linalg.norm(x_list_newton[0][-1] - x_opt(functions[n].__name__, dim)), "Median Iteration: ",
+        x_list_sd.sort(key=lambda x: np.linalg.norm(x[-1] - x_list_scipy.x))
+        x_list_newton.sort(key=lambda x: np.linalg.norm(x[-1] - x_list_scipy.x))
+        print("Steepest Descent: ", x_list_sd[0][-1], "Median Error: ",
+              np.linalg.norm(x_list_sd[0][-1] - x_list_scipy.x), "Median Iteration: ",
+              len(x_list_sd[len(x_list_sd) // 2]))
+
+        print("Newton: ", x_list_newton[0][-1], "Scipy: ", x_list_scipy, "Median Error: ",
+              np.linalg.norm(x_list_newton[0][-1] - x_list_scipy.x), "Median Iteration: ",
               len(x_list_newton[len(x_list_newton) // 2]))
         
         #print("Length of x_list_sd: ", len(x_list_sd))
         print("Length of x_list_newton: ", len(x_list_newton))
         
         # if the function is not the 4 or 5, we are not converging
-        if functions[n].__name__ != 'f4' and functions[n].__name__ != 'f5':
+        #if functions[n].__name__ != 'f4' and functions[n].__name__ != 'f5':
             #x_list_sd = np.array(x_list_sd)
-            x_list_newton = np.array(x_list_newton)
+            #x_list_newton = np.array(x_list_newton)
             # Plot path for the worst, best and median case
             #plot(x_list_sd, functions[n], x0, 'Steepest Descent for ' + functions[n].__name__)
-            plot(x_list_newton, functions[n], x0, 'Newton for ' + functions[n].__name__)
+            #plot(x_list_newton, functions[n], x0, 'Newton for ' + functions[n].__name__)
         
         # Plot convergence for the worst, best and median case
-        #plot_convergence(x_list_sd, functions[n], x_opt(functions[n].__name__, dim),
-                         #'Steepest Descent convergence for ' + functions[n].__name__)
-        plot_convergence(x_list_newton, functions[n], x_opt(functions[n].__name__, dim),
+        plot_convergence(x_list_sd, functions[n], x_list_scipy.x,
+                         'Steepest Descent convergence for ' + functions[n].__name__)
+        plot_convergence(x_list_newton, functions[n], x_list_scipy.x,
                          'Newton convergence for ' + functions[n].__name__)
         
